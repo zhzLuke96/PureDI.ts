@@ -1,6 +1,6 @@
 # PureDI.ts
 
-A zero-dependency, type-safe Dependency Injection container for TypeScript.
+A zero-dependency, type-safe Dependency Injection container for TypeScript.  
 **No decorators. No `reflect-metadata`. No compiler magic.**
 
 Just pure Classes and TypeScript inference.
@@ -10,13 +10,13 @@ Just pure Classes and TypeScript inference.
 - 🚀 **Zero Runtime Overhead**: No reflection, no parsing metadata.
 - 🛡 **Type Safe**: Constructor arguments are inferred automatically.
 - 📦 **Single File**: Copy-paste `di.ts` into your project and you are done.
-- 🔄 **Circular Dependencies**: Built-in support for lazy injection.
+- 🔄 **Circular Dependencies**: Built-in support for lazy injection using Arrow Functions.
 
 ## Usage
 
 ### 1. Define Services
 
-Define your dependencies in a `static dependencies` property. Types are inferred automatically!
+Define your dependencies in a `static dependencies` property.
 
 ```typescript
 // config.service.ts
@@ -34,11 +34,11 @@ export class LoggerService {
 
 ### 2. Inject Dependencies
 
-Use the `Inject` utility type to type your constructor arguments.
+Use `Inject<typeof MyClass>` to automatically infer the constructor type.
 
 ```typescript
 // app.service.ts
-import type { Inject } from "./di";
+import { Inject } from "./di";
 import { ConfigService } from "./config.service";
 import { LoggerService } from "./logger.service";
 
@@ -50,11 +50,11 @@ export class AppService {
   };
 
   // 2. Auto-inferred types!
-  // props: { config: ConfigService; logger: LoggerService }
-  constructor(private props: Inject<typeof AppService>) {}
+  // ctx: { config: ConfigService; logger: LoggerService }
+  constructor(private ctx: Inject<typeof AppService>) {}
 
   start() {
-    this.props.logger.log(`Connecting to ${this.props.config.db}...`);
+    this.ctx.logger.log(`Connecting to ${this.ctx.config.db}...`);
   }
 }
 ```
@@ -73,41 +73,64 @@ const app = container.get(AppService);
 app.start();
 ```
 
----
+## Important Limitations
 
-## Advanced: Circular Dependencies
+1. **Static Property Required**: You must define `static dependencies` in your class to tell the container what to inject.
+2. **Arrow Functions for Lazy Loading**: If you use lazy injection (for circular dependencies), you **must use Arrow Functions** (`() => Class`). Regular functions (`function() {}`) have prototypes and will be mistaken for Classes.
 
-If `Parent` imports `Child` and `Child` imports `Parent`, use the **Lazy Thunk** pattern:
+## Handling Circular Dependencies
 
-1. Use a **getter** for `dependencies` (solves import order).
-2. Wrap the class in a **function** `() => Class` (solves constructor deadlock).
+If `Parent` imports `Child` and `Child` imports `Parent`:
+
+1. Use a **getter** for `dependencies` (solves module import order).
+2. Wrap the class in an **Arrow Function** (solves constructor deadlock).
 
 ```typescript
 // parent.ts
-import type { Inject } from "./di";
-import { Child } from "./child";
-
 export class Parent {
-  // Lazy Define
   static get dependencies() {
     return {
-      // Lazy Injection
+      // Must use Arrow Function here!
       child: () => Child,
     };
   }
 
-  constructor(private deps: Inject<typeof Parent.dependencies>) {}
+  constructor(private ctx: Inject<typeof Parent>) {}
 
   run() {
-    // Call it as a function to get the instance
-    this.deps.child().doSomething();
+    // Call as function to get instance
+    this.ctx.child().doSomething();
   }
+}
+```
+
+## Scoping
+
+PureDI is simple. **One Container = One Scope.**
+
+If you need a Request Scope (e.g., for an HTTP request), simply create a new `Container` instance for that request.
+
+```typescript
+// Global services (Singleton across app)
+const rootContainer = new Container();
+rootContainer.register(DbService, new DbService());
+
+function handleRequest(req) {
+  // Request Scope
+  const reqContainer = new Container();
+
+  // Share global singletons by registering them manually into the scoped container
+  reqContainer.register(DbService, rootContainer.get(DbService));
+
+  // New instances for this request
+  const handler = reqContainer.get(RequestHandler);
+  handler.process();
 }
 ```
 
 ## Installation
 
-Just copy `di.ts` to your project. That's it.
+Just copy di.ts to your project. That's it.
 
 ## License
 

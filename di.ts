@@ -1,69 +1,112 @@
+/**
+ * ============================================================================
+ *  PureDI - Minimal Type-Safe DI Container
+ * ============================================================================
+ */
+
+// 1. Core Type Definitions
+// ----------------------------------------------------------------------------
+
 type Constructor<T = any> = new (...args: any[]) => T;
 type DepValue = Constructor | (() => Constructor);
 type DepMap = Record<string, DepValue>;
 
 /**
- * 辅助类型：用于解包 static dependencies
- * 如果是 getter 函数，提取返回值；如果是对象，直接使用；否则返回 never
+ * Helper: Unwraps the dependency definition.
+ * Handles cases where dependencies might be returned by a function (runtime thunk).
  */
 type UnwrapDeps<T> = T extends () => infer R ? R : T;
+
 /**
- * [Type Magic] 自动推导依赖注入类型
+ * [Type Magic] logic to map dependencies to instances.
  */
 type InjectDeps<T> = UnwrapDeps<T> extends infer Map extends DepMap
   ? {
       [K in keyof Map]: Map[K] extends () => infer C
         ? C extends Constructor
           ? () => InstanceType<C>
-          : never // Lazy: 注入 () => Instance
+          : never // Lazy: Injects `() => Instance`
         : Map[K] extends Constructor
         ? InstanceType<Map[K]>
-        : never; // Normal: 注入 Instance
+        : never; // Normal: Injects `Instance`
     }
-  : {}; // 如果没有依赖或类型不匹配，返回空对象
+  : {};
+
 /**
- * [Type Magic] 自动推导依赖注入类型
+ * Public Type: Infers constructor arguments from the static `dependencies` property.
+ *
+ * Usage: constructor(ctx: Inject<typeof MyService>) {}
  */
 export type Inject<T> = T extends { dependencies?: infer R }
   ? InjectDeps<R>
   : {};
 
+// 2. Container Implementation
+// ----------------------------------------------------------------------------
+
 export class Container {
+  /** Cache for singleton instances */
   private instances = new Map<Constructor, any>();
+
+  /** Track services currently being created to detect non-lazy circular loops */
   private resolving = new Set<Constructor>();
 
-  get<T>(Service: Constructor<T>): T {
-    if (this.instances.has(Service)) return this.instances.get(Service);
+  /**
+   * Manually register an instance (useful for testing/mocking).
+   * @param token The class constructor
+   * @param instance The instance to register
+   */
+  register<T>(token: Constructor<T>, instance: T): void {
+    this.instances.set(token, instance);
+  }
 
-    // 只有在非 Lazy 解析时才需要检测死锁
+  /**
+   * Resolve and retrieve a service instance.
+   * Automatically resolves the dependency tree defined in `static dependencies`.
+   *
+   * @param Service The class constructor to resolve
+   */
+  get<T>(Service: Constructor<T>): T {
+    // 1. Return cached instance if available (Singleton)
+    if (this.instances.has(Service)) {
+      return this.instances.get(Service);
+    }
+
+    // 2. Detect deadlock (Recursion without Lazy Thunk)
     if (this.resolving.has(Service)) {
-      throw new Error(`Circular dependency: ${Service.name}`);
+      throw new Error(`Circular dependency detected: ${Service.name}`);
     }
 
     this.resolving.add(Service);
 
     try {
-      const depsDef = (Service as any).dependencies;
-      const depsMap = typeof depsDef === "function" ? depsDef() : depsDef || {};
+      // 3. Read dependencies definition
+      const rawDeps = (Service as any).dependencies;
+
+      // Support both `static dependencies = { ... }` and `static get dependencies() { return ... }`
+      const depsMap: DepMap =
+        typeof rawDeps === "function" ? rawDeps() : rawDeps || {};
+
       const context: any = {};
 
+      // 4. Recursively resolve dependencies
       for (const [key, DepOrThunk] of Object.entries(depsMap)) {
-        // 判断是 Class 还是 Thunk (() => Class)
-        // 简单的判断方式：看有没有 prototype
-        if (
-          "prototype" in (DepOrThunk as any) &&
-          (DepOrThunk as any).prototype
-        ) {
-          // 是普通 Class -> 立即解析
+        // Check if it is a Class or an Arrow Function (Thunk).
+        // We use `prototype` check because Arrow Functions do not have a prototype.
+        const isClass =
+          "prototype" in (DepOrThunk as any) && !!(DepOrThunk as any).prototype;
+
+        if (isClass) {
+          // Normal Injection: Resolve immediately
           context[key] = this.get(DepOrThunk as Constructor);
         } else {
-          // 是 Thunk -> 延迟解析 (注入一个 getter 函数)
-          // 这里的核心：直到用户调用 this.ctx.serviceB() 时，才去执行 container.get
-          const Thunk = DepOrThunk as () => Constructor;
-          context[key] = () => this.get(Thunk());
+          // Lazy Injection: Inject a getter function to delay resolution
+          const thunk = DepOrThunk as () => Constructor;
+          context[key] = () => this.get(thunk());
         }
       }
 
+      // 5. Instantiate and cache
       const instance = new Service(context);
       this.instances.set(Service, instance);
       return instance;
