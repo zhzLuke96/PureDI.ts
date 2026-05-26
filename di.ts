@@ -47,7 +47,8 @@ export type Inject<T> = T extends { dependencies?: infer R }
 export class Container {
   /** Cache for singleton instances */
   private instances = new Map<Constructor, any>();
-
+  /** Factories for instances */
+  private factories = new Map<Constructor, (c: Container) => any>();
   /** Track services currently being created to detect non-lazy circular loops */
   private resolving = new Set<Constructor>();
 
@@ -58,6 +59,18 @@ export class Container {
    */
   register<T>(token: Constructor<T>, instance: T): void {
     this.instances.set(token, instance);
+  }
+
+  /**
+   * Manually register a factory function.
+   * @param token The class constructor
+   * @param factory A function that returns an instance
+   */
+  registerThunk<T>(
+    token: Constructor<T>,
+    factory: (container: Container) => T
+  ): void {
+    this.factories.set(token, factory);
   }
 
   /**
@@ -72,7 +85,19 @@ export class Container {
       return this.instances.get(Service);
     }
 
-    // 2. Detect deadlock (Recursion without Lazy Thunk)
+    // Resolve from factories
+    if (this.factories.has(Service)) {
+      this.resolving.add(Service);
+      try {
+        const instance = this.factories.get(Service)!(this);
+        this.instances.set(Service, instance);
+        return instance;
+      } finally {
+        this.resolving.delete(Service);
+      }
+    }
+
+    // Detect deadlock (Recursion without Lazy Thunk)
     if (this.resolving.has(Service)) {
       throw new Error(`Circular dependency detected: ${Service.name}`);
     }
@@ -80,7 +105,7 @@ export class Container {
     this.resolving.add(Service);
 
     try {
-      // 3. Read dependencies definition
+      // Read dependencies definition
       const rawDeps = (Service as any).dependencies;
 
       // Support both `static dependencies = { ... }` and `static get dependencies() { return ... }`
@@ -89,7 +114,7 @@ export class Container {
 
       const context: any = {};
 
-      // 4. Recursively resolve dependencies
+      // Recursively resolve dependencies
       for (const [key, DepOrThunk] of Object.entries(depsMap)) {
         // Check if it is a Class or an Arrow Function (Thunk).
         // We use `prototype` check because Arrow Functions do not have a prototype.
@@ -106,7 +131,7 @@ export class Container {
         }
       }
 
-      // 5. Instantiate and cache
+      // Instantiate and cache
       const instance = new Service(context);
       this.instances.set(Service, instance);
       return instance;

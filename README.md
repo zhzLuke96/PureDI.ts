@@ -1,137 +1,78 @@
-# PureDI.ts
+# PureDI
 
-A zero-dependency, type-safe Dependency Injection container for TypeScript.  
-**No decorators. No `reflect-metadata`. No compiler magic.**
+Type‑safe DI container for TypeScript. No decorators, no `reflect-metadata`, no magic.
 
-Just pure Classes and TypeScript inference.
+## Quick start
 
-## Features
+Copy [`di.ts`](./di.ts) into your project.
 
-- 🚀 **Zero Runtime Overhead**: No reflection, no parsing metadata.
-- 🛡 **Type Safe**: Constructor arguments are inferred automatically.
-- 📦 **Single File**: Copy-paste `di.ts` into your project and you are done.
-- 🔄 **Circular Dependencies**: Built-in support for lazy injection using Arrow Functions.
+```ts
+import { Container, Inject } from "./di";
 
-## Usage
-
-### 1. Define Services
-
-Define your dependencies in a `static dependencies` property.
-
-```typescript
-// config.service.ts
-export class ConfigService {
-  readonly db = "postgres://localhost:5432";
-}
-
-// logger.service.ts
-export class LoggerService {
+class Logger {
   log(msg: string) {
     console.log(msg);
   }
 }
-```
 
-### 2. Inject Dependencies
-
-Use `Inject<typeof MyClass>` to automatically infer the constructor type.
-
-```typescript
-// app.service.ts
-import { Inject } from "./di";
-import { ConfigService } from "./config.service";
-import { LoggerService } from "./logger.service";
-
-export class AppService {
-  // 1. Define dependencies (Single Source of Truth)
-  static dependencies = {
-    config: ConfigService,
-    logger: LoggerService,
-  };
-
-  // 2. Auto-inferred types!
-  // ctx: { config: ConfigService; logger: LoggerService }
-  constructor(private ctx: Inject<typeof AppService>) {}
-
-  start() {
-    this.ctx.logger.log(`Connecting to ${this.ctx.config.db}...`);
+class App {
+  static dependencies = { logger: Logger };
+  constructor(private ctx: Inject<typeof App>) {}
+  run() {
+    this.ctx.logger.log("Hello");
   }
 }
-```
-
-### 3. Run
-
-```typescript
-import { Container } from "./di";
-import { AppService } from "./app.service";
 
 const container = new Container();
-
-// Just get the root service, PureDI handles the rest.
-const app = container.get(AppService);
-
-app.start();
+container.get(App).run();
 ```
 
-## Important Limitations
+## API
 
-1. **Static Property Required**: You must define `static dependencies` in your class to tell the container what to inject.
-2. **Arrow Functions for Lazy Loading**: If you use lazy injection (for circular dependencies), you **must use Arrow Functions** (`() => Class`). Regular functions (`function() {}`) have prototypes and will be mistaken for Classes.
+| Method                            | Description                                                |
+| --------------------------------- | ---------------------------------------------------------- |
+| `get<T>(CTOR)`                    | Resolves a singleton instance (creates if missing).        |
+| `register<T>(CTOR, instance)`     | Manually registers an existing instance (mocks / sharing). |
+| `registerThunk<T>(CTOR, factory)` | Lazy factory: called once on first `get()`.                |
 
-## Handling Circular Dependencies
+## Circular dependencies
 
-If `Parent` imports `Child` and `Child` imports `Parent`:
+Use **arrow functions** inside `static get dependencies()`:
 
-1. Use a **getter** for `dependencies` (solves module import order).
-2. Wrap the class in an **Arrow Function** (solves constructor deadlock).
-
-```typescript
-// parent.ts
-export class Parent {
+```ts
+class Parent {
   static get dependencies() {
-    return {
-      // Must use Arrow Function here!
-      child: () => Child,
-    };
+    return { child: () => Child }; // lazy
   }
-
   constructor(private ctx: Inject<typeof Parent>) {}
+  hello() {
+    this.ctx.child().world();
+  }
+}
 
-  run() {
-    // Call as function to get instance
-    this.ctx.child().doSomething();
+class Child {
+  static get dependencies() {
+    return { parent: () => Parent };
+  }
+  world() {
+    this.ctx.parent().hello();
   }
 }
 ```
 
-## Scoping
+> ⚠️ Arrow functions are mandatory – regular `function` have a prototype and will be mistaken for classes.
 
-PureDI is simple. **One Container = One Scope.**
+## Lazy factories
 
-If you need a Request Scope (e.g., for an HTTP request), simply create a new `Container` instance for that request.
-
-```typescript
-// Global services (Singleton across app)
-const rootContainer = new Container();
-rootContainer.register(DbService, new DbService());
-
-function handleRequest(req) {
-  // Request Scope
-  const reqContainer = new Container();
-
-  // Share global singletons by registering them manually into the scoped container
-  reqContainer.register(DbService, rootContainer.get(DbService));
-
-  // New instances for this request
-  const handler = reqContainer.get(RequestHandler);
-  handler.process();
-}
+```ts
+container.registerThunk(ExpensiveService, (c) => {
+  const config = c.get(ConfigService);
+  return new ExpensiveService(config);
+});
 ```
 
-## Installation
+## Limitations
 
-Just copy di.ts to your project. That's it.
-
-## License
-
-MIT
+- Every class that needs DI must have a `static dependencies` object (or getter).
+- Synchronous resolution only.
+- One container = one singleton scope. For per‑request scopes, create a new container.
